@@ -439,7 +439,8 @@ public:
 		std::tuple<Additional_Cell_Items...>,
 		std::tuple<Additional_Neighbor_Items...>
 	>& initialize(
-		const MPI_Comm& given_comm,
+		const MPI_Comm work_comm,
+		const MPI_Comm global_comm = MPI_COMM_WORLD,
 		const uint64_t sfc_caching_batches = 1
 	) {
 		using std::to_string;
@@ -458,7 +459,7 @@ public:
 			);
 		}
 
-		if (!this->initialize_mpi(given_comm)) {
+		if (!this->initialize_mpi(work_comm, global_comm)) {
 			throw std::invalid_argument(
 				"\n" __FILE__ "(" + to_string(__LINE__) + "): "
 				+ "Couldn't initialize MPI"
@@ -7276,8 +7277,12 @@ private:
 	bool send_single_cells = false;
 
 	// the grid is distributed between these processes
-	MPI_Comm comm;
-	uint64_t rank, comm_size;
+	MPI_Comm work_comm;
+	int work_rank, global_rank; 
+
+	// the grid metadata is shared with these processes
+	MPI_Comm global_comm;
+	int work_size, global_size;
 
 	// cells and their data on this process
 	std::unordered_map<uint64_t, Cell_Data> cell_data;
@@ -7635,7 +7640,7 @@ private:
 	/*!
 	Checks and initializes MPI related stuff.
 	*/
-	bool initialize_mpi(const MPI_Comm& given_comm)
+	bool initialize_mpi(const MPI_Comm work_comm, const MPI_Comm global_comm)
 	{
 		int ret_val = -1;
 
@@ -7643,7 +7648,38 @@ private:
 		Setup MPI related stuff
 		*/
 
-		ret_val = MPI_Comm_dup(given_comm, &this->comm);
+		if (work_comm != MPI_COMM_NULL) {
+			ret_val = MPI_Comm_dup(work_comm, &this->work_comm);
+			if (ret_val != MPI_SUCCESS) {
+				std::cerr << __FILE__ << ":" << __LINE__
+					<< " Couldn't duplicate communicator: " << Error_String()(ret_val)
+					<< std::endl;
+				return false;
+			}
+
+			ret_val = MPI_Comm_size(this->work_comm, &work_size);
+			if (ret_val != MPI_SUCCESS) {
+				std::cerr << __FILE__ << ":" << __LINE__
+					<< " Couldn't get size of communicator: " << Error_String()(ret_val)
+					<< std::endl;
+				return false;
+			}
+
+			ret_val = MPI_Comm_rank(this->work_comm, &work_rank);
+			if (ret_val != MPI_SUCCESS) {
+				std::cerr << __FILE__ << ":" << __LINE__
+					<< " Couldn't get rank for communicator: " << Error_String()(ret_val)
+					<< std::endl;
+				return false;
+			}
+		} else {
+			this->work_comm = MPI_COMM_NULL;
+			this->work_rank = 0;
+			this->work_size = 0;
+		}
+
+		// Assert global comm is not null
+		ret_val = MPI_Comm_dup(global_comm, &this->global_comm);
 		if (ret_val != MPI_SUCCESS) {
 			std::cerr << __FILE__ << ":" << __LINE__
 				<< " Couldn't duplicate communicator: " << Error_String()(ret_val)
@@ -7651,37 +7687,21 @@ private:
 			return false;
 		}
 
-		int temp_size = 0;
-		ret_val = MPI_Comm_size(this->comm, &temp_size);
+		ret_val = MPI_Comm_size(this->global_comm, &global_size);
 		if (ret_val != MPI_SUCCESS) {
 			std::cerr << __FILE__ << ":" << __LINE__
 				<< " Couldn't get size of communicator: " << Error_String()(ret_val)
 				<< std::endl;
 			return false;
 		}
-		if (temp_size < 0) {
-			std::cerr << __FILE__ << ":" << __LINE__
-				<< " Negative MPI comm size not supported: " << temp_size
-				<< std::endl;
-			return false;
-		}
-		this->comm_size = (uint64_t) temp_size;
 
-		int temp_rank = 0;
-		ret_val = MPI_Comm_rank(this->comm, &temp_rank);
+		ret_val = MPI_Comm_rank(this->global_comm, &global_rank);
 		if (ret_val != MPI_SUCCESS) {
 			std::cerr << __FILE__ << ":" << __LINE__
 				<< " Couldn't get rank for communicator: " << Error_String()(ret_val)
 				<< std::endl;
 			return false;
 		}
-		if (temp_rank < 0) {
-			std::cerr << __FILE__ << ":" << __LINE__
-				<< " Negative MPI rank not supported: " << temp_rank
-				<< std::endl;
-			abort();
-		}
-		this->rank = (uint64_t) temp_rank;
 
 		// get maximum tag value
 		int attr_flag = -1, *attr = NULL;
@@ -7710,7 +7730,7 @@ private:
 		int ret_val = -1;
 
 		MPI_Comm temp; // give a separate comminucator to zoltan
-		ret_val = MPI_Comm_dup(this->comm, &temp);
+		ret_val = MPI_Comm_dup(this->work_comm, &temp);
 		if (ret_val != MPI_SUCCESS) {
 			std::cerr << "Couldn't duplicate communicator for Zoltan" << std::endl;
 			return false;
