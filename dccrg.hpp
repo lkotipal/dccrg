@@ -3274,6 +3274,7 @@ public:
 				this->cells_to_receive[process_of_unrefined].push_back(
 					std::make_pair(unrefined, -1)
 				);
+				this->unrefined_cell_data[unrefined];
 			}
 		}
 
